@@ -8,8 +8,8 @@ local BloxSpeak = BloxSpeak or (function()
 	error("BloxSpeak SDK module not found")
 end)()
 
-local BOT_TOKEN = "bsb_0QvB0iMjPKwHHz8wHiSTmE9qkOSD5gRR"
-local PREFIX = "!"
+local BOT_TOKEN = (process.env and process.env.BOT_TOKEN and #process.env.BOT_TOKEN > 0) and process.env.BOT_TOKEN or "bsb_0QvB0iMjPKwHHz8wHiSTmE9qkOSD5gRR"
+local PREFIX = (process.env and process.env.PREFIX and #process.env.PREFIX > 0) and process.env.PREFIX or "!"
 local DATA_FILE = "tickets_data.json"
 local START_TIME = os.time()
 
