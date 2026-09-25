@@ -1,6 +1,9 @@
---!strict
--- Complete BloxSpeak Tickets Bot with Embedded Web Server & Dashboard for Render Hosting
--- Built with BloxSpeak SDK (Lune runtime)
+local process = process or require("@lune/process")
+local net = net or require("@lune/net")
+local fs = fs or require("@lune/fs")
+local serde = serde or require("@lune/serde")
+local task = task or require("@lune/task")
+local datetime = datetime or require("@lune/datetime")
 
 local BloxSpeak = BloxSpeak or (function()
 	local ok, mod = pcall(function() return require("./bloxspeak") end)
@@ -8,8 +11,8 @@ local BloxSpeak = BloxSpeak or (function()
 	error("BloxSpeak SDK module failed to load: " .. tostring(mod))
 end)()
 
-local BOT_TOKEN = (process.env and process.env.BOT_TOKEN and #process.env.BOT_TOKEN > 0) and process.env.BOT_TOKEN or "bsb_0QvB0iMjPKwHHz8wHiSTmE9qkOSD5gRR"
-local PREFIX = (process.env and process.env.PREFIX and #process.env.PREFIX > 0) and process.env.PREFIX or "!"
+local BOT_TOKEN = (process and process.env and process.env.BOT_TOKEN and #process.env.BOT_TOKEN > 0) and process.env.BOT_TOKEN or "bsb_0QvB0iMjPKwHHz8wHiSTmE9qkOSD5gRR"
+local PREFIX = (process and process.env and process.env.PREFIX and #process.env.PREFIX > 0) and process.env.PREFIX or "!"
 local DATA_FILE = "tickets_data.json"
 local START_TIME = os.time()
 

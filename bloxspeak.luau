@@ -9,10 +9,12 @@
 --            (messages, edits, deletes, reactions, and sending).
 -- Every connect and request counts toward the bot's 2,000 daily actions (an open socket reconnects about 24 times a day).
 
-local net = net
-local task = task
-local serde = serde
-local datetime = datetime
+local net = net or require("@lune/net")
+local task = task or require("@lune/task")
+local serde = serde or require("@lune/serde")
+local datetime = datetime or require("@lune/datetime")
+local process = process or require("@lune/process")
+local fs = fs or require("@lune/fs")
 
 local DEFAULT_URL = "https://bloxspeak.com"
 local OP_TIMEOUT = 15 -- seconds to wait for the answer to a socket action
