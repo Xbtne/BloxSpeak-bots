@@ -1,0 +1,17 @@
+{
+  "name": "bloxspeak-tickets-bot",
+  "version": "1.0.0",
+  "description": "BloxSpeak Tickets Bot with Web Dashboard",
+  "main": "bot.luau",
+  "scripts": {
+    "postinstall": "curl -fsSL https://github.com/lune-org/lune/releases/download/v0.10.5/lune-0.10.5-linux-x86_64.zip -o lune.zip && unzip -o lune.zip && chmod +x lune && rm lune.zip",
+    "build": "echo 'Build complete'",
+    "start": "./lune run bot.luau"
+  },
+  "keywords": [
+    "bloxspeak",
+    "tickets-bot"
+  ],
+  "author": "Xbtne",
+  "license": "MIT"
+}
