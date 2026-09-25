@@ -1,4 +1,4 @@
-﻿-- BloxSpeak bot SDK for Lune (https://github.com/lune-org/lune).
+-- BloxSpeak bot SDK for Lune (https://github.com/lune-org/lune).
 -- The bloxspeak-sdk runner loads this file as the global `BloxSpeak`, after setting the Lune libraries
 -- (net, task, serde, fs, stdio, datetime, process) as globals.
 --

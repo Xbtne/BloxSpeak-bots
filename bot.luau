@@ -5,7 +5,7 @@
 local BloxSpeak = BloxSpeak or (function()
 	local ok, mod = pcall(function() return require("./bloxspeak") end)
 	if ok then return mod end
-	error("BloxSpeak SDK module not found")
+	error("BloxSpeak SDK module failed to load: " .. tostring(mod))
 end)()
 
 local BOT_TOKEN = (process.env and process.env.BOT_TOKEN and #process.env.BOT_TOKEN > 0) and process.env.BOT_TOKEN or "bsb_0QvB0iMjPKwHHz8wHiSTmE9qkOSD5gRR"
