@@ -1,10 +1,17 @@
 --!strict
--- Complete Tickets Bot with Direct Message (DM) Notifications for BloxSpeak
+-- Complete BloxSpeak Tickets Bot with Embedded Web Server & Dashboard for Render Hosting
 -- Built with BloxSpeak SDK (Lune runtime)
+
+local BloxSpeak = BloxSpeak or (function()
+	local ok, mod = pcall(function() return require("./bloxspeak") end)
+	if ok then return mod end
+	error("BloxSpeak SDK module not found")
+end)()
 
 local BOT_TOKEN = "bsb_0QvB0iMjPKwHHz8wHiSTmE9qkOSD5gRR"
 local PREFIX = "!"
 local DATA_FILE = "tickets_data.json"
+local START_TIME = os.time()
 
 -- Types
 type TicketRecord = {
@@ -88,6 +95,22 @@ end
 
 local function formatTicketNumber(num: number): string
 	return string.format("%04d", num)
+end
+
+local function getActiveCount(): number
+	local count = 0
+	for _, _ in pairs(db.tickets) do
+		count += 1
+	end
+	return count
+end
+
+local function getClosedCount(): number
+	local count = 0
+	for _, _ in pairs(db.closedTickets) do
+		count += 1
+	end
+	return count
 end
 
 -- Initialize Bot Client
@@ -188,7 +211,7 @@ local function closeTicket(room: any, server: any, user: any, closeReason: strin
 	end)
 end
 
--- Create a new ticket channel (Sends notification via DM to the user)
+-- Create a new ticket channel (Sends notification via DM to user)
 local function createTicket(server: any, author: any, initialReason: string?, originRoom: any?, sourceMessage: any?)
 	local creatorId = author.Id
 	local creatorName = author.Username or ("User_" .. string.sub(creatorId, 1, 4))
@@ -222,7 +245,7 @@ local function createTicket(server: any, author: any, initialReason: string?, or
 		log("ERROR", errText)
 		task.spawn(function()
 			pcall(function()
-				author:SendDM("❌ **Failed to create ticket channel.** Please contact an administrator to verify bot permissions.", nil)
+				author:SendDM("❌ **Failed to create ticket channel.** Please verify bot permissions (`ManageChannels`).", nil)
 			end)
 		end)
 		return
@@ -248,7 +271,7 @@ local function createTicket(server: any, author: any, initialReason: string?, or
 	db.tickets[room.Id] = newTicket
 	saveData()
 
-	-- DM the user directly instead of sending a message in the origin/panel channel
+	-- Send DM to the user directly
 	task.spawn(function()
 		local dmText = string.format("✅ **Ticket Created!** Your support ticket channel is ready in **%s**: **#%s**", server.Name, channelName)
 		local dmOk, dmErr = pcall(function()
@@ -292,7 +315,6 @@ local function createTicket(server: any, author: any, initialReason: string?, or
 			db.ticketWelcomeMessageIds[welcomeMsg.Id] = true
 			saveData()
 
-			-- Add reaction buttons to the welcome message
 			pcall(function() welcomeMsg:React("🔒") end)
 			pcall(function() welcomeMsg:React("🙋‍♂️") end)
 			pcall(function() welcomeMsg:React("📜") end)
@@ -367,7 +389,7 @@ bot.MessageCreated:Connect(function(message)
 
 	-- Ping Command
 	if command == "ping" then
-		message:Reply("🏓 **Pong!** BloxSpeak Tickets Bot is online! 🚀", nil)
+		message:Reply("🏓 **Pong!** BloxSpeak Tickets Bot is online and healthy! 🚀", nil)
 		return
 	end
 
@@ -570,15 +592,6 @@ bot.MessageCreated:Connect(function(message)
 
 	-- Stats Command
 	if command == "stats" or command == "ticketstats" then
-		local activeCount = 0
-		for _, _ in pairs(db.tickets) do
-			activeCount += 1
-		end
-		local closedCount = 0
-		for _, _ in pairs(db.closedTickets) do
-			closedCount += 1
-		end
-
 		local statsContent = string.format(
 			"📊 **TICKET SYSTEM STATISTICS**\n" ..
 			"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" ..
@@ -587,8 +600,8 @@ bot.MessageCreated:Connect(function(message)
 			"• **Archived / Closed Tickets:** `%d`\n" ..
 			"━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
 			db.ticketCounter,
-			activeCount,
-			closedCount
+			getActiveCount(),
+			getClosedCount()
 		)
 		message:Reply(statsContent, nil)
 		return
@@ -662,8 +675,271 @@ bot.ReactionAdded:Connect(function(reaction)
 	end
 end)
 
+-- Web Dashboard Generator
+local function formatUptime(seconds: number): string
+	local d = math.floor(seconds / 86400)
+	local h = math.floor((seconds % 86400) / 3600)
+	local m = math.floor((seconds % 3600) / 60)
+	local s = seconds % 60
+	if d > 0 then
+		return string.format("%dd %dh %dm %ds", d, h, m, s)
+	elseif h > 0 then
+		return string.format("%dh %dm %ds", h, m, s)
+	elseif m > 0 then
+		return string.format("%dm %ds", m, s)
+	else
+		return string.format("%ds", s)
+	end
+end
+
+local function generateDashboardHtml(): string
+	local botName = (bot._me and bot._me.Username) or "Tickets Bot"
+	local botId = (bot._me and bot._me.Id) or "0QvB0iMjP"
+	local uptime = formatUptime(os.time() - START_TIME)
+	local totalTickets = db.ticketCounter
+	local activeTickets = getActiveCount()
+	local closedTickets = getClosedCount()
+
+	return string.format([[<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>%s | BloxSpeak Tickets</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-base: #0B0E14;
+            --bg-card: #151A23;
+            --bg-card-hover: #1C222E;
+            --accent-primary: #5865F2;
+            --accent-glow: rgba(88, 101, 242, 0.35);
+            --accent-success: #23A55A;
+            --accent-warning: #F0B232;
+            --text-main: #F2F3F5;
+            --text-muted: #949BA4;
+            --border: #232836;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Plus Jakarta Sans', sans-serif; }
+        body { background-color: var(--bg-base); color: var(--text-main); min-height: 100vh; display: flex; flex-direction: column; }
+        
+        .navbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.25rem 2.5rem;
+            background: rgba(21, 26, 35, 0.8);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .logo { display: flex; align-items: center; gap: 0.75rem; font-size: 1.35rem; font-weight: 800; color: #fff; }
+        .badge-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: rgba(35, 165, 90, 0.15);
+            border: 1px solid rgba(35, 165, 90, 0.4);
+            color: var(--accent-success);
+            padding: 0.35rem 0.9rem;
+            border-radius: 999px;
+            font-size: 0.85rem;
+            font-weight: 700;
+        }
+        .status-dot { width: 8px; height: 8px; background: var(--accent-success); border-radius: 50%; box-shadow: 0 0 10px var(--accent-success); animation: pulse 2s infinite; }
+        @keyframes pulse { 0%% { transform: scale(0.95); opacity: 0.8; } 50%% { transform: scale(1.2); opacity: 1; } 100%% { transform: scale(0.95); opacity: 0.8; } }
+
+        .container { max-width: 1100px; margin: 0 auto; padding: 3rem 1.5rem; flex: 1; }
+        .hero { text-align: center; margin-bottom: 3.5rem; }
+        .hero h1 { font-size: 2.8rem; font-weight: 800; margin-bottom: 0.75rem; background: linear-gradient(135deg, #fff 30%%, var(--accent-primary) 100%%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .hero p { color: var(--text-muted); font-size: 1.15rem; max-width: 650px; margin: 0 auto; line-height: 1.6; }
+
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.5rem; margin-bottom: 3.5rem; }
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            padding: 1.75rem;
+            border-radius: 16px;
+            transition: all 0.2s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        .stat-card:hover { transform: translateY(-4px); border-color: var(--accent-primary); box-shadow: 0 10px 25px -5px var(--accent-glow); }
+        .stat-label { color: var(--text-muted); font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
+        .stat-value { font-size: 2.25rem; font-weight: 800; color: #fff; }
+
+        .section-title { font-size: 1.4rem; font-weight: 700; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 0.5rem; }
+        .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; }
+        
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 1.75rem;
+        }
+        .command-item {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            padding: 0.85rem 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        .command-item:last-child { border-bottom: none; }
+        .cmd-badge {
+            background: rgba(88, 101, 242, 0.15);
+            color: #8A98FE;
+            padding: 0.25rem 0.6rem;
+            border-radius: 6px;
+            font-family: monospace;
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+        .cmd-desc { color: var(--text-muted); font-size: 0.9rem; text-align: right; max-width: 60%%; }
+
+        .footer { text-align: center; padding: 2rem; color: var(--text-muted); font-size: 0.85rem; border-top: 1px solid var(--border); margin-top: auto; }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="logo">
+            <span>🎫</span> %s
+        </div>
+        <div class="badge-status">
+            <div class="status-dot"></div>
+            <span>ONLINE & OPERATIONAL</span>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="hero">
+            <h1>BloxSpeak Tickets Dashboard</h1>
+            <p>High-performance customer support system for BloxSpeak with reaction panels, instant private DMs, transcripts, and channel lifecycle management.</p>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">Total Tickets Created</div>
+                <div class="stat-value">#%04d</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Currently Open</div>
+                <div class="stat-value" style="color: var(--accent-success);">%d</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Archived / Closed</div>
+                <div class="stat-value">%d</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">System Uptime</div>
+                <div class="stat-value" style="font-size: 1.6rem; margin-top: 0.5rem;">%s</div>
+            </div>
+        </div>
+
+        <div class="grid-2">
+            <div class="card">
+                <div class="section-title">⚡ Interactive Reactions</div>
+                <div class="command-item">
+                    <span class="cmd-badge">🎫 Panel Reaction</span>
+                    <span class="cmd-desc">Opens private ticket & sends DM to user</span>
+                </div>
+                <div class="command-item">
+                    <span class="cmd-badge">🔒 Close Reaction</span>
+                    <span class="cmd-desc">Saves transcript and deletes channel in 5s</span>
+                </div>
+                <div class="command-item">
+                    <span class="cmd-badge">🙋‍♂️ Claim Reaction</span>
+                    <span class="cmd-desc">Assigns staff member to ticket</span>
+                </div>
+                <div class="command-item">
+                    <span class="cmd-badge">📜 Transcript Reaction</span>
+                    <span class="cmd-desc">Generates message history log</span>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="section-title">🛠️ Chat Commands</div>
+                <div class="command-item">
+                    <span class="cmd-badge">!panel</span>
+                    <span class="cmd-desc">Deploys ticket reaction panel</span>
+                </div>
+                <div class="command-item">
+                    <span class="cmd-badge">!new [reason]</span>
+                    <span class="cmd-desc">Opens support ticket</span>
+                </div>
+                <div class="command-item">
+                    <span class="cmd-badge">!close [reason]</span>
+                    <span class="cmd-desc">Archives & deletes ticket</span>
+                </div>
+                <div class="command-item">
+                    <span class="cmd-badge">!priority &lt;level&gt;</span>
+                    <span class="cmd-desc">Low, Normal, High, Urgent</span>
+                </div>
+                <div class="command-item">
+                    <span class="cmd-badge">!stats</span>
+                    <span class="cmd-desc">Displays server ticket metrics</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="footer">
+        BloxSpeak Bot ID: <code>%s</code> • Powered by Lune Runtime • Hosted on Render
+    </footer>
+</body>
+</html>]], botName, botName, totalTickets, activeTickets, closedTickets, uptime, botId)
+end
+
+-- Start Embedded HTTP Web Server for Render Hosting
+local PORT = tonumber(process.env.PORT) or 8080
+
+task.spawn(function()
+	local ok, serverOrErr = pcall(function()
+		return net.serve(PORT, function(req)
+			local path = req.path or "/"
+			if path == "/healthz" or path == "/health" or path == "/ping" then
+				return {
+					status = 200,
+					headers = { ["content-type"] = "text/plain" },
+					body = "OK",
+				}
+			elseif path == "/api/stats" then
+				return {
+					status = 200,
+					headers = { ["content-type"] = "application/json", ["access-control-allow-origin"] = "*" },
+					body = serde.encode("json", {
+						status = "online",
+						botId = bot._me and bot._me.Id or "0QvB0iMjP",
+						botName = bot._me and bot._me.Username or "Tickets",
+						totalTickets = db.ticketCounter,
+						activeTickets = getActiveCount(),
+						closedTickets = getClosedCount(),
+						uptime = os.time() - START_TIME,
+					}),
+				}
+			else
+				return {
+					status = 200,
+					headers = { ["content-type"] = "text/html; charset=utf-8" },
+					body = generateDashboardHtml(),
+				}
+			end
+		end)
+	end)
+
+	if ok then
+		log("INFO", string.format("Web Dashboard & Healthcheck Server listening on port %d", PORT))
+	else
+		log("ERROR", string.format("Failed to start web server: %s", tostring(serverOrErr)))
+	end
+end)
+
 -- Start Bot
-log("INFO", "Starting BloxSpeak Tickets Bot with DM notifications...")
+log("INFO", "Starting BloxSpeak Tickets Bot with Dashboard & Web Server...")
 bot:Connect()
 
 -- Keep process alive
