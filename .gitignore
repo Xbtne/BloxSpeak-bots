@@ -1,0 +1,6 @@
+# Binaries
+bloxspeak-sdk.exe
+
+# Database and logs
+tickets_data.json
+transcripts/
