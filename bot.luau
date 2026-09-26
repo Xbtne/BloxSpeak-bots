@@ -1,3 +1,10 @@
+--!strict
+--[[
+    BloxSpeak Tickets Bot - Ultimate Edition
+    Featuring Rich Discord-Style Embed Cards, Fast Reaction Controls, Direct Message Alerts,
+    Transcript Archiving, Staff Claims, Priority Management & Web Dashboard for 24/7 Hosting.
+]]
+
 local process = process or require("@lune/process")
 local net = net or require("@lune/net")
 local fs = fs or require("@lune/fs")
@@ -16,13 +23,16 @@ local PREFIX = (process and process.env and process.env.PREFIX and #process.env.
 local DATA_FILE = "tickets_data.json"
 local START_TIME = os.time()
 
--- Types
+--------------------------------------------------------------------------------
+-- 1. Database & Persistence
+--------------------------------------------------------------------------------
 type TicketRecord = {
 	id: number,
 	channelId: string,
 	channelName: string,
 	welcomeMessageId: string?,
 	serverId: string,
+	serverName: string?,
 	creatorId: string,
 	creatorName: string,
 	reason: string,
@@ -41,7 +51,6 @@ type BotData = {
 	closedTickets: { [string]: TicketRecord }, -- ticketId -> TicketRecord
 }
 
--- Load or Initialize Database
 local function loadData(): BotData
 	local defaultData: BotData = {
 		ticketCounter = 0,
@@ -83,10 +92,15 @@ end
 
 local db: BotData = loadData()
 
+local saveScheduled = false
 local function saveData()
-	pcall(function()
-		local encoded = serde.encode("json", db, true)
-		fs.writeFile(DATA_FILE, encoded)
+	if saveScheduled then return end
+	saveScheduled = true
+	task.delay(0.5, function()
+		saveScheduled = false
+		pcall(function()
+			fs.writeFile(DATA_FILE, serde.encode("json", db, true))
+		end)
 	end)
 end
 
@@ -116,17 +130,118 @@ local function getClosedCount(): number
 	return count
 end
 
--- Initialize Bot Client
-local bot = BloxSpeak.new(BOT_TOKEN)
+--------------------------------------------------------------------------------
+-- 2. Embed Engine
+--------------------------------------------------------------------------------
+type EmbedField = {
+	name: string,
+	value: string,
+}
 
--- Ensure transcripts directory exists
+type EmbedOptions = {
+	title: string?,
+	color: string?,       -- Emoji/Icon prefix (e.g. 🎫, ✅, ❌, ⚠️, 🔒, ⚡)
+	author: string?,
+	description: string?,
+	fields: { EmbedField }?,
+	footer: string?,
+}
+
+local function formatEmbed(opts: EmbedOptions): string
+	local lines = {}
+
+	-- Title / Header
+	if opts.title and opts.title ~= "" then
+		local icon = opts.color or "🔹"
+		table.insert(lines, string.format("### %s **%s**", icon, opts.title))
+	end
+
+	-- Top Border
+	table.insert(lines, "> ━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+	-- Author info if specified
+	if opts.author and opts.author ~= "" then
+		table.insert(lines, string.format("> 👤 *%s*", opts.author))
+		table.insert(lines, "> ")
+	end
+
+	-- Description body
+	if opts.description and opts.description ~= "" then
+		for descLine in string.gmatch(opts.description, "[^\r\n]+") do
+			table.insert(lines, "> " .. descLine)
+		end
+	end
+
+	-- Structured Fields
+	if opts.fields and #opts.fields > 0 then
+		if opts.description and opts.description ~= "" then
+			table.insert(lines, "> ")
+		end
+		for _, field in opts.fields do
+			table.insert(lines, string.format("> **%s**", field.name))
+			for valLine in string.gmatch(field.value, "[^\r\n]+") do
+				table.insert(lines, string.format("> • %s", valLine))
+			end
+		end
+	end
+
+	-- Bottom Border & Footer
+	table.insert(lines, "> ━━━━━━━━━━━━━━━━━━━━━━━━━")
+	if opts.footer and opts.footer ~= "" then
+		table.insert(lines, string.format("> *%s*", opts.footer))
+	else
+		table.insert(lines, "> *BloxSpeak Tickets System • Fast & Secure*")
+	end
+
+	return table.concat(lines, "\n")
+end
+
+local function errorEmbed(title: string, message: string): string
+	return formatEmbed({
+		title = title or "Error",
+		color = "❌",
+		description = message,
+		footer = "BloxSpeak Tickets • Error Notification",
+	})
+end
+
+local function successEmbed(title: string, message: string, footer: string?): string
+	return formatEmbed({
+		title = title or "Success",
+		color = "✅",
+		description = message,
+		footer = footer or "BloxSpeak Tickets • Operation Completed",
+	})
+end
+
+local function warnEmbed(title: string, message: string): string
+	return formatEmbed({
+		title = title or "Warning",
+		color = "⚠️",
+		description = message,
+		footer = "BloxSpeak Tickets • Notice",
+	})
+end
+
+local function infoEmbed(title: string, message: string, fields: { EmbedField }?): string
+	return formatEmbed({
+		title = title or "Information",
+		color = "ℹ️",
+		description = message,
+		fields = fields,
+		footer = "BloxSpeak Tickets • Information Card",
+	})
+end
+
+--------------------------------------------------------------------------------
+-- 3. Transcripts & Helpers
+--------------------------------------------------------------------------------
 pcall(function()
 	if not fs.isDir("transcripts") then
 		fs.writeDir("transcripts")
 	end
 end)
 
--- Generate Transcript function
 local function generateTranscript(room: any, ticket: TicketRecord?): string
 	local msgsOk, messages = room:GetMessages({ Limit = 50 })
 	local lines = {}
@@ -136,7 +251,7 @@ local function generateTranscript(room: any, ticket: TicketRecord?): string
 	if ticket then
 		table.insert(lines, string.format("Creator: %s (ID: %s)", ticket.creatorName, ticket.creatorId))
 		table.insert(lines, string.format("Created At: %s UTC", os.date("!%Y-%m-%d %H:%M:%S", ticket.createdAt)))
-		table.insert(lines, string.format("Channel Name: #%s", ticket.channelName or "ticket"))
+		table.insert(lines, string.format("Channel: #%s", ticket.channelName or "ticket"))
 		table.insert(lines, string.format("Topic/Reason: %s", ticket.reason))
 		table.insert(lines, string.format("Priority: %s", ticket.priority))
 		if ticket.claimedByName then
@@ -155,78 +270,55 @@ local function generateTranscript(room: any, ticket: TicketRecord?): string
 			table.insert(lines, string.format("[%s] %s: %s", timeStr, authorName, content))
 		end
 	else
-		table.insert(lines, "(Could not retrieve message history)")
+		table.insert(lines, "(Could not retrieve past message history)")
 	end
 	table.insert(lines, "==================================================")
 	return table.concat(lines, "\n")
 end
 
--- Close a ticket with countdown and deletion
-local function closeTicket(room: any, server: any, user: any, closeReason: string?)
-	local ticket = db.tickets[room.Id]
-	if not ticket then
-		room:Send("⚠️ This channel is not recognized as an active ticket.", nil)
-		return
+local function extractUserId(str: string?): string?
+	if not str then return nil end
+	local id = string.match(str, "^<@!?([%w_%-]+)>$")
+	if not id then
+		id = string.match(str, "^@?([%w_%-]+)$")
 	end
-
-	local closerName = user.Username or ("User_" .. string.sub(user.Id, 1, 4))
-	local reason = (closeReason and #closeReason > 0) and closeReason or "No reason specified"
-
-	log("INFO", string.format("Closing ticket #%04d by %s (Reason: %s)", ticket.id, closerName, reason))
-
-	-- Generate transcript and save to disk
-	local transcript = generateTranscript(room, ticket)
-	local transcriptFile = string.format("transcripts/transcript_ticket_%04d_%d.txt", ticket.id, os.time())
-	pcall(function()
-		fs.writeFile(transcriptFile, transcript)
-	end)
-
-	-- Update database
-	ticket.status = "closed"
-	db.closedTickets[tostring(ticket.id)] = ticket
-	db.tickets[room.Id] = nil
-	saveData()
-
-	room:Send(string.format(
-		"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" ..
-		"🔒 **TICKET #%04d CLOSED**\n" ..
-		"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" ..
-		"• **Closed By:** @%s\n" ..
-		"• **Reason:** %s\n" ..
-		"• **Transcript:** Saved successfully\n\n" ..
-		"🗑️ *This ticket channel will be automatically deleted in 5 seconds...*\n" ..
-		"━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-		ticket.id,
-		closerName,
-		reason
-	), nil)
-
-	-- Asynchronous deletion countdown
-	task.spawn(function()
-		task.wait(5)
-		log("INFO", string.format("Deleting channel %s for closed ticket #%04d", room.Id, ticket.id))
-		local delOk, delRes = bot:_request("DELETE", "/api/servers/" .. server.Id .. "/channels/" .. room.Id)
-		if not delOk then
-			log("ERROR", string.format("Failed to delete channel %s: %s", room.Id, tostring(delRes)))
-		else
-			log("INFO", string.format("Successfully deleted channel %s", room.Id))
-		end
-	end)
+	return id
 end
 
--- Create a new ticket channel (Sends notification via DM to user)
+local function formatUptime(seconds: number): string
+	local d = math.floor(seconds / 86400)
+	local h = math.floor((seconds % 86400) / 3600)
+	local m = math.floor((seconds % 3600) / 60)
+	local s = seconds % 60
+	if d > 0 then
+		return string.format("%dd %dh %dm %ds", d, h, m, s)
+	elseif h > 0 then
+		return string.format("%dh %dm %ds", h, m, s)
+	elseif m > 0 then
+		return string.format("%dm %ds", m, s)
+	else
+		return string.format("%ds", s)
+	end
+end
+
+--------------------------------------------------------------------------------
+-- 4. Bot Core & Ticket Actions
+--------------------------------------------------------------------------------
+local bot = BloxSpeak.new(BOT_TOKEN)
+
+-- Create a new ticket channel with rich embeds
 local function createTicket(server: any, author: any, initialReason: string?, originRoom: any?, sourceMessage: any?)
 	local creatorId = author.Id
 	local creatorName = author.Username or ("User_" .. string.sub(creatorId, 1, 4))
-	local reason = (initialReason and #initialReason > 0) and initialReason or "No reason provided"
+	local reason = (initialReason and #initialReason > 0) and initialReason or "General Support / Inquiry"
 
 	-- Check if user already has an active ticket in this server
 	for _, ticket in pairs(db.tickets) do
 		if ticket.serverId == server.Id and ticket.creatorId == creatorId and ticket.status == "open" then
-			local msgText = string.format("⚠️ You already have an open ticket in **%s** (**#%s**)! Please check your existing ticket channel.", server.Name, ticket.channelName or ("ticket-" .. ticket.id))
+			local warnText = warnEmbed("Ticket Already Open", string.format("You already have an active support ticket in **%s** (**#%s**).\nPlease use your existing ticket channel.", server.Name or "this server", ticket.channelName or ("ticket-" .. ticket.id)))
 			task.spawn(function()
 				pcall(function()
-					author:SendDM(msgText, nil)
+					author:SendDM(warnText, nil)
 				end)
 			end)
 			return
@@ -248,7 +340,7 @@ local function createTicket(server: any, author: any, initialReason: string?, or
 		log("ERROR", errText)
 		task.spawn(function()
 			pcall(function()
-				author:SendDM("❌ **Failed to create ticket channel.** Please verify bot permissions (`ManageChannels`).", nil)
+				author:SendDM(errorEmbed("Ticket Creation Failed", "Could not create your ticket channel. Please notify a server administrator to check the bot's `ManageChannels` permission."), nil)
 			end)
 		end)
 		return
@@ -261,58 +353,67 @@ local function createTicket(server: any, author: any, initialReason: string?, or
 		channelName = channelName,
 		welcomeMessageId = nil,
 		serverId = server.Id,
+		serverName = server.Name,
 		creatorId = creatorId,
 		creatorName = creatorName,
 		reason = reason,
 		createdAt = os.time(),
 		claimedBy = nil,
 		claimedByName = nil,
-		priority = "Normal",
+		priority = "🔵 Normal",
 		status = "open",
 	}
 
 	db.tickets[room.Id] = newTicket
 	saveData()
 
-	-- Send DM to the user directly
+	-- Send DM confirmation embed to user
 	task.spawn(function()
-		local dmText = string.format("✅ **Ticket Created!** Your support ticket channel is ready in **%s**: **#%s**", server.Name, channelName)
-		local dmOk, dmErr = pcall(function()
-			return author:SendDM(dmText, nil)
+		local dmEmbed = formatEmbed({
+			title = "Ticket Created Successfully",
+			color = "🎫",
+			description = string.format("Your private support ticket has been created in **%s**!", server.Name or "Server"),
+			fields = {
+				{ name = "📌 Channel Name", value = string.format("`#%s`", channelName) },
+				{ name = "🆔 Ticket ID", value = string.format("`#%s`", formattedNum) },
+				{ name = "📝 Topic", value = reason },
+			},
+			footer = "Please navigate to your channel to speak with support staff.",
+		})
+		pcall(function()
+			author:SendDM(dmEmbed, nil)
 		end)
-		if not dmOk then
-			log("WARN", string.format("Failed to DM user %s: %s", creatorName, tostring(dmErr)))
-		end
 	end)
 
-	-- Send welcome banner inside new ticket channel
-	local welcomeContent = string.format(
-		"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" ..
-		"🎫 **TICKET #%s - SUPPORT REQUEST**\n" ..
-		"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" ..
-		"👋 Welcome @%s! Support staff will assist you shortly.\n\n" ..
-		"📋 **Ticket Information:**\n" ..
-		"• **Ticket ID:** `#%s`\n" ..
-		"• **Created By:** @%s (ID: `%s`)\n" ..
-		"• **Topic:** `%s`\n" ..
-		"• **Priority:** `Normal`\n" ..
-		"• **Status:** 🟢 Open\n\n" ..
-		"⚡ **Quick Reactions Controls:**\n" ..
-		"• React 🔒 to **Close Ticket**\n" ..
-		"• React 🙋‍♂️ to **Claim Ticket**\n" ..
-		"• React 📜 to **View Transcript**\n\n" ..
-		"🛠️ **Commands:** `!close` | `!claim` | `!unclaim` | `!transcript` | `!priority` | `!topic`\n" ..
-		"━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-		formattedNum,
-		creatorName,
-		formattedNum,
-		creatorName,
-		creatorId,
-		reason
-	)
+	-- Send Rich Welcome Embed inside the new ticket channel
+	local welcomeEmbed = formatEmbed({
+		title = string.format("SUPPORT TICKET #%s", formattedNum),
+		color = "🎫",
+		author = string.format("Opened by @%s", creatorName),
+		description = "👋 Welcome to your dedicated support channel! Our staff team will assist you shortly. Please provide all relevant details below.",
+		fields = {
+			{
+				name = "📋 Ticket Information",
+				value = string.format("**Ticket ID:** `#%s`\n**Creator:** <@%s>\n**Priority:** `🔵 Normal`\n**Status:** 🟢 Open", formattedNum, creatorId),
+			},
+			{
+				name = "📝 Inquiry / Topic",
+				value = string.format("`%s`", reason),
+			},
+			{
+				name = "⚡ Quick Reaction Buttons",
+				value = "🔒 React **🔒** to **Close & Delete**\n🙋‍♂️ React **🙋‍♂️** to **Claim Ticket (Staff)**\n📜 React **📜** to **View Transcript**",
+			},
+			{
+				name = "🛠️ Chat Commands",
+				value = string.format("`%sclose` • `%sclaim` • `%sunclaim` • `%spriority` • `%stopic` • `%sadd`", PREFIX, PREFIX, PREFIX, PREFIX, PREFIX, PREFIX),
+			},
+		},
+		footer = "BloxSpeak Tickets • React below or use chat commands",
+	})
 
 	task.spawn(function()
-		local sendOk, welcomeMsg = room:Send(welcomeContent, nil)
+		local sendOk, welcomeMsg = room:Send(welcomeEmbed, nil)
 		if sendOk and welcomeMsg then
 			newTicket.welcomeMessageId = welcomeMsg.Id
 			db.ticketWelcomeMessageIds[welcomeMsg.Id] = true
@@ -327,18 +428,75 @@ local function createTicket(server: any, author: any, initialReason: string?, or
 	log("INFO", string.format("Successfully created ticket #%s in channel %s (#%s)", formattedNum, room.Id, channelName))
 end
 
--- Bot Event: Connected
+-- Close a ticket with countdown, transcript, and deletion
+local function closeTicket(room: any, server: any, user: any, closeReason: string?)
+	local ticket = db.tickets[room.Id]
+	if not ticket then
+		room:Send(warnEmbed("Invalid Channel", "This channel is not recognized as an active support ticket."), nil)
+		return
+	end
+
+	local closerName = user.Username or ("User_" .. string.sub(user.Id, 1, 4))
+	local reason = (closeReason and #closeReason > 0) and closeReason or "Resolved / Closed by user"
+
+	log("INFO", string.format("Closing ticket #%04d by %s (Reason: %s)", ticket.id, closerName, reason))
+
+	-- Generate transcript and save to disk
+	local transcript = generateTranscript(room, ticket)
+	local transcriptFile = string.format("transcripts/transcript_ticket_%04d_%d.txt", ticket.id, os.time())
+	pcall(function()
+		fs.writeFile(transcriptFile, transcript)
+	end)
+
+	-- Update database
+	ticket.status = "closed"
+	db.closedTickets[tostring(ticket.id)] = ticket
+	db.tickets[room.Id] = nil
+	saveData()
+
+	local closeEmbed = formatEmbed({
+		title = string.format("Ticket #%04d Closed", ticket.id),
+		color = "🔒",
+		description = "This ticket has been marked as resolved and closed.",
+		fields = {
+			{ name = "👤 Closed By", value = string.format("<@%s>", user.Id) },
+			{ name = "📝 Reason", value = reason },
+			{ name = "📜 Transcript", value = "Archived & saved to database" },
+			{ name = "🗑️ Channel Deletion", value = "**This channel will be automatically deleted in 5 seconds...**" },
+		},
+		footer = "Thank you for contacting support!",
+	})
+
+	room:Send(closeEmbed, nil)
+
+	-- Asynchronous deletion countdown
+	task.spawn(function()
+		task.wait(5)
+		log("INFO", string.format("Deleting channel %s for closed ticket #%04d", room.Id, ticket.id))
+		local delOk, delRes = bot:_request("DELETE", "/api/servers/" .. server.Id .. "/channels/" .. room.Id)
+		if not delOk then
+			log("ERROR", string.format("Failed to delete channel %s: %s", room.Id, tostring(delRes)))
+		else
+			log("INFO", string.format("Successfully deleted channel %s", room.Id))
+		end
+	end)
+end
+
+--------------------------------------------------------------------------------
+-- 5. Bot Events
+--------------------------------------------------------------------------------
 bot.Connected:Connect(function(user)
-	log("INFO", string.format("Connected to BloxSpeak as %s (ID: %s)", user.Username or "TicketBot", user.Id))
+	log("INFO", string.format("Connected to BloxSpeak as @%s (ID: %s)", user.Username or "TicketBot", user.Id))
 	bot:SetStatus("Online")
 end)
 
--- Bot Event: Disconnected
 bot.Disconnected:Connect(function(err)
 	log("WARN", string.format("Disconnected: %s (%s)", err.Message or "Unknown error", err.Code or "NO_CODE"))
 end)
 
--- Bot Event: MessageCreated (Commands)
+--------------------------------------------------------------------------------
+-- 6. Message Commands Handler
+--------------------------------------------------------------------------------
 bot.MessageCreated:Connect(function(message)
 	if message.IsSystem then return end
 	if not message.Author or not message.Content then return end
@@ -362,69 +520,118 @@ bot.MessageCreated:Connect(function(message)
 	local server = message.Server
 	local author = message.Author
 
-	-- Help Command
+	-- !help [command]
 	if command == "help" or command == "tickethelp" or command == "commands" then
-		local helpText = 
-			"🎫 **BloxSpeak Ticket Bot - Help Menu**\n" ..
-			"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" ..
-			"📌 **User Commands & Controls:**\n" ..
-			"• `!panel` / `!ticket-panel` - Post interactive 🎫 Ticket Reaction Panel\n" ..
-			"• `!new [reason]` / `!ticket [reason]` - Open a new ticket channel\n" ..
-			"• `!close [reason]` - Close and delete the ticket channel\n" ..
-			"• `!transcript` - View ticket transcript\n" ..
-			"• `!info` - View ticket details\n" ..
-			"• `!ping` - Bot latency & health\n\n" ..
-			"🛡️ **Staff Commands:**\n" ..
-			"• `!claim` - Claim active ticket\n" ..
-			"• `!unclaim` - Release claimed ticket\n" ..
-			"• `!priority <low|normal|high|urgent>` - Update priority\n" ..
-			"• `!topic <new reason>` - Update topic\n" ..
-			"• `!stats` - View total ticket statistics\n\n" ..
-			"⚡ **Reactions:**\n" ..
-			"• React 🎫 or 📩 on panel -> Opens ticket (Sends confirmation via DM)\n" ..
-			"• React 🔒 in ticket -> Closes ticket\n" ..
-			"• React 🙋‍♂️ in ticket -> Claims ticket\n" ..
-			"• React 📜 in ticket -> Generates transcript\n" ..
-			"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-		message:Reply(helpText, nil)
+		local subCmd = args[1]
+		if subCmd then
+			subCmd = string.lower(subCmd)
+			local details: { [string]: { title: string, usage: string, desc: string } } = {
+				panel = { title = "Ticket Reaction Panel", usage = PREFIX .. "panel", desc = "Deploys the interactive 🎫 Ticket Panel embed with 1-click reaction support." },
+				new = { title = "Open Ticket", usage = PREFIX .. "new [reason]", desc = "Opens a new dedicated support ticket channel with full embed controls." },
+				close = { title = "Close Ticket", usage = PREFIX .. "close [reason]", desc = "Closes the ticket, archives the transcript, and deletes the channel after 5s." },
+				claim = { title = "Claim Ticket", usage = PREFIX .. "claim", desc = "Claims the active ticket so other staff know you are handling it." },
+				unclaim = { title = "Unclaim Ticket", usage = PREFIX .. "unclaim", desc = "Releases the ticket claim back to the general staff queue." },
+				priority = { title = "Set Priority", usage = PREFIX .. "priority <low|normal|high|urgent>", desc = "Updates the ticket urgency priority level." },
+				topic = { title = "Update Topic", usage = PREFIX .. "topic <new reason>", desc = "Updates the inquiry topic and reason for the ticket." },
+				transcript = { title = "Export Transcript", usage = PREFIX .. "transcript", desc = "Generates and displays a complete formatted log of ticket messages." },
+				info = { title = "Ticket Info", usage = PREFIX .. "info", desc = "Displays creator, claimer, priority, and metadata for current ticket." },
+				rename = { title = "Rename Ticket", usage = PREFIX .. "rename <new-name>", desc = "Renames the ticket channel." },
+				stats = { title = "System Stats", usage = PREFIX .. "stats", desc = "Displays total open, active, and archived ticket statistics." },
+				ping = { title = "Bot Status", usage = PREFIX .. "ping", desc = "Checks bot latency, runtime, and uptime health." },
+			}
+
+			local info = details[subCmd]
+			if info then
+				message:Reply(formatEmbed({
+					title = "Command: " .. info.title,
+					color = "📖",
+					fields = {
+						{ name = "📖 Usage", value = string.format("`%s`", info.usage) },
+						{ name = "📝 Description", value = info.desc },
+					},
+					footer = "BloxSpeak Tickets • Command Reference",
+				}), nil)
+				return
+			end
+		end
+
+		local helpEmbed = formatEmbed({
+			title = "BloxSpeak Tickets Bot - Command Guide",
+			color = "🎫",
+			description = "High-performance customer support system with rich embed cards and reaction controls.",
+			fields = {
+				{
+					name = "📌 User Commands",
+					value = string.format("`%snew [reason]` • Open a support ticket\n`%sclose [reason]` • Close & archive ticket\n`%stranscript` • Export message log\n`%sinfo` • View current ticket details\n`%sping` • Check bot health & latency", PREFIX, PREFIX, PREFIX, PREFIX, PREFIX),
+				},
+				{
+					name = "🛡️ Staff Commands",
+					value = string.format("`%spanel` • Deploy interactive ticket panel\n`%sclaim` • Claim the active ticket\n`%sunclaim` • Release ticket claim\n`%spriority <level>` • Low, Normal, High, Urgent\n`%stopic <reason>` • Update ticket topic\n`%sstats` • Server ticket metrics", PREFIX, PREFIX, PREFIX, PREFIX, PREFIX, PREFIX),
+				},
+				{
+					name = "⚡ Quick Reactions",
+					value = "🎫 **Panel 🎫/📩** ➔ Opens a new support ticket & sends DM\n🔒 **Ticket 🔒** ➔ Closes & deletes ticket channel\n🙋‍♂️ **Ticket 🙋‍♂️** ➔ Claims ticket for staff\n📜 **Ticket 📜** ➔ Exports message transcript",
+				},
+			},
+			footer = string.format("Type %shelp <command> for parameter details.", PREFIX),
+		})
+
+		message:Reply(helpEmbed, nil)
 		return
 	end
 
-	-- Ping Command
+	-- !ping
 	if command == "ping" then
-		message:Reply("🏓 **Pong!** BloxSpeak Tickets Bot is online and healthy! 🚀", nil)
+		local uptime = formatUptime(os.time() - START_TIME)
+		message:Reply(formatEmbed({
+			title = "Pong! Bot is Operational",
+			color = "🏓",
+			description = "BloxSpeak Tickets Bot is running with optimal performance.",
+			fields = {
+				{ name = "⚡ Status", value = "🟢 Online & Ready" },
+				{ name = "⏱️ Uptime", value = string.format("`%s`", uptime) },
+				{ name = "🎫 Active Tickets", value = string.format("`%d active`", getActiveCount()) },
+			},
+			footer = "BloxSpeak Tickets System",
+		}), nil)
 		return
 	end
 
-	-- Open Ticket Command
+	-- !new / !ticket / !open [reason]
 	if command == "new" or command == "ticket" or command == "open" then
 		if not server then
-			message:Reply("⚠️ Tickets can only be created inside a server channel.", nil)
+			message:Reply(errorEmbed("Server Only", "Tickets can only be opened inside a server channel."), nil)
 			return
 		end
 		createTicket(server, author, argString, room, message)
 		return
 	end
 
-	-- Panel Creation Command
+	-- !panel / !ticket-panel / !setup
 	if command == "panel" or command == "ticket-panel" or command == "setup" then
 		if not server then
-			message:Reply("⚠️ This command must be executed in a server channel.", nil)
+			message:Reply(errorEmbed("Server Only", "The ticket panel must be deployed in a server channel."), nil)
 			return
 		end
 
-		local panelContent = 
-			"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" ..
-			"🎫 **SUPPORT TICKET SYSTEM**\n" ..
-			"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" ..
-			"Need assistance, have questions, or want to report an issue?\n\n" ..
-			"📩 **How to open a ticket:**\n" ..
-			"• React with **🎫** or **📩** to open a support ticket\n" ..
-			"• Or type `!new [reason]`\n\n" ..
-			"A dedicated private channel will be created for you automatically!\n" ..
-			"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+		local panelEmbed = formatEmbed({
+			title = "SUPPORT TICKET SYSTEM",
+			color = "🎫",
+			description = "Welcome to our customer support center! If you need assistance, want to report an issue, or have questions, open a ticket below.",
+			fields = {
+				{
+					name = "📩 How to Open a Ticket",
+					value = "• Click the **🎫** or **📩** reaction below\n• Or type `" .. PREFIX .. "new [your inquiry]` in chat",
+				},
+				{
+					name = "🔒 What Happens Next?",
+					value = "A private dedicated support channel will be created for you automatically, and you will receive a direct notification!",
+				},
+			},
+			footer = "Click 🎫 below to open a support ticket",
+		})
 
-		local sendOk, sentMsg = room:Send(panelContent, nil)
+		local sendOk, sentMsg = room:Send(panelEmbed, nil)
 		if sendOk and sentMsg then
 			db.panelMessageIds[sentMsg.Id] = true
 			saveData()
@@ -435,19 +642,19 @@ bot.MessageCreated:Connect(function(message)
 				pcall(function() sentMsg:React("📩") end)
 			end)
 		else
-			message:Reply("❌ Failed to send ticket panel.", nil)
+			message:Reply(errorEmbed("Panel Error", "Failed to deploy the ticket panel. Please check bot permissions."), nil)
 		end
 		return
 	end
 
-	-- Close Command
+	-- !close [reason]
 	if command == "close" then
 		if not server then return end
 		closeTicket(room, server, author, argString)
 		return
 	end
 
-	-- Transcript Command
+	-- !transcript
 	if command == "transcript" or command == "log" then
 		local ticket = db.tickets[room.Id]
 		local transcript = generateTranscript(room, ticket)
@@ -457,20 +664,25 @@ bot.MessageCreated:Connect(function(message)
 			preview = preview .. "\n... [Transcript Truncated due to size limit]"
 		end
 
-		message:Reply(string.format("📜 **Ticket Transcript:**\n```\n%s\n```", preview), nil)
+		message:Reply(formatEmbed({
+			title = string.format("Ticket Transcript #%04d", ticket and ticket.id or 0),
+			color = "📜",
+			description = string.format("```\n%s\n```", preview),
+			footer = "BloxSpeak Tickets • Transcript Archive",
+		}), nil)
 		return
 	end
 
-	-- Claim Command
+	-- !claim
 	if command == "claim" then
 		local ticket = db.tickets[room.Id]
 		if not ticket then
-			message:Reply("⚠️ This command can only be used inside an active ticket channel.", nil)
+			message:Reply(warnEmbed("Invalid Channel", "This command can only be used inside an active ticket channel."), nil)
 			return
 		end
 
 		if ticket.claimedBy then
-			message:Reply(string.format("⚠️ This ticket is already claimed by **@%s**!", ticket.claimedByName or "Staff"), nil)
+			message:Reply(warnEmbed("Already Claimed", string.format("This ticket is already claimed by **@%s**!", ticket.claimedByName or "Staff")), nil)
 			return
 		end
 
@@ -478,20 +690,20 @@ bot.MessageCreated:Connect(function(message)
 		ticket.claimedByName = author.Username or ("User_" .. string.sub(author.Id, 1, 4))
 		saveData()
 
-		message:Reply(string.format("🙋‍♂️ **Ticket #%04d has been claimed by @%s!** They will be assisting you.", ticket.id, ticket.claimedByName), nil)
+		message:Reply(successEmbed("Ticket Claimed", string.format("🙋‍♂️ <@%s> has claimed **Ticket #%04d** and will be assisting you!", author.Id, ticket.id)), nil)
 		return
 	end
 
-	-- Unclaim Command
+	-- !unclaim
 	if command == "unclaim" then
 		local ticket = db.tickets[room.Id]
 		if not ticket then
-			message:Reply("⚠️ This command can only be used inside an active ticket channel.", nil)
+			message:Reply(warnEmbed("Invalid Channel", "This command can only be used inside an active ticket channel."), nil)
 			return
 		end
 
 		if not ticket.claimedBy then
-			message:Reply("⚠️ This ticket is not currently claimed.", nil)
+			message:Reply(warnEmbed("Not Claimed", "This ticket is not currently claimed."), nil)
 			return
 		end
 
@@ -500,20 +712,20 @@ bot.MessageCreated:Connect(function(message)
 		ticket.claimedByName = nil
 		saveData()
 
-		message:Reply(string.format("🔄 **Ticket #%04d has been unclaimed** (previously by @%s). Another staff member may claim it.", ticket.id, prevClaimer or "Staff"), nil)
+		message:Reply(infoEmbed("Ticket Unclaimed", string.format("🔄 **Ticket #%04d** has been released by @%s. Another staff member may now claim it.", ticket.id, prevClaimer or "Staff")), nil)
 		return
 	end
 
-	-- Priority Command
+	-- !priority <low|normal|high|urgent>
 	if command == "priority" or command == "setpriority" then
 		local ticket = db.tickets[room.Id]
 		if not ticket then
-			message:Reply("⚠️ This command can only be used inside an active ticket channel.", nil)
+			message:Reply(warnEmbed("Invalid Channel", "This command can only be used inside an active ticket channel."), nil)
 			return
 		end
 
 		if #args == 0 then
-			message:Reply("⚠️ Please specify a priority: `!priority <low|normal|high|urgent>`", nil)
+			message:Reply(warnEmbed("Missing Priority", "Usage: `" .. PREFIX .. "priority <low|normal|high|urgent>`"), nil)
 			return
 		end
 
@@ -528,90 +740,86 @@ bot.MessageCreated:Connect(function(message)
 		local requested = string.lower(args[1])
 		local formattedPriority = validPriorities[requested]
 		if not formattedPriority then
-			message:Reply("⚠️ Invalid priority! Choose from: `low`, `normal`, `high`, `urgent`", nil)
+			message:Reply(errorEmbed("Invalid Priority", "Valid priorities: `low`, `normal`, `high`, `urgent`"), nil)
 			return
 		end
 
 		ticket.priority = formattedPriority
 		saveData()
 
-		message:Reply(string.format("⚡ **Ticket priority updated:** %s", formattedPriority), nil)
+		message:Reply(successEmbed("Priority Updated", string.format("⚡ Ticket priority set to **%s**", formattedPriority)), nil)
 		return
 	end
 
-	-- Topic / Reason Command
+	-- !topic <description>
 	if command == "topic" or command == "reason" or command == "settopic" then
 		local ticket = db.tickets[room.Id]
 		if not ticket then
-			message:Reply("⚠️ This command can only be used inside an active ticket channel.", nil)
+			message:Reply(warnEmbed("Invalid Channel", "This command can only be used inside an active ticket channel."), nil)
 			return
 		end
 
 		if #argString == 0 then
-			message:Reply("⚠️ Please specify the new topic: `!topic <description>`", nil)
+			message:Reply(warnEmbed("Missing Topic", "Usage: `" .. PREFIX .. "topic <new inquiry description>`"), nil)
 			return
 		end
 
 		ticket.reason = argString
 		saveData()
 
-		message:Reply(string.format("📝 **Ticket topic updated to:** `%s`", argString), nil)
+		message:Reply(successEmbed("Topic Updated", string.format("📝 Ticket topic updated to:\n`%s`", argString)), nil)
 		return
 	end
 
-	-- Info Command
+	-- !info
 	if command == "info" or command == "ticketinfo" then
 		local ticket = db.tickets[room.Id]
 		if not ticket then
-			message:Reply("⚠️ This channel is not an active ticket.", nil)
+			message:Reply(warnEmbed("Invalid Channel", "This channel is not an active support ticket."), nil)
 			return
 		end
 
-		local infoContent = string.format(
-			"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" ..
-			"📋 **TICKET #%04d INFORMATION**\n" ..
-			"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" ..
-			"• **Channel:** #%s\n" ..
-			"• **Creator:** @%s (`%s`)\n" ..
-			"• **Opened At:** %s UTC\n" ..
-			"• **Status:** %s\n" ..
-			"• **Priority:** %s\n" ..
-			"• **Claimed By:** %s\n" ..
-			"• **Topic:** %s\n" ..
-			"━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-			ticket.id,
-			ticket.channelName or ("ticket-" .. ticket.id),
-			ticket.creatorName,
-			ticket.creatorId,
-			os.date("!%Y-%m-%d %H:%M:%S", ticket.createdAt),
-			ticket.status == "open" and "🟢 Open" or "🔴 Closed",
-			ticket.priority,
-			ticket.claimedByName and string.format("@%s (`%s`)", ticket.claimedByName, ticket.claimedBy or "") or "*Unclaimed*",
-			ticket.reason
-		)
-		message:Reply(infoContent, nil)
+		local claimText = ticket.claimedByName and string.format("<@%s> (`%s`)", ticket.claimedBy or "", ticket.claimedByName) or "*Unclaimed (Staff Queue)*"
+		local infoCard = formatEmbed({
+			title = string.format("TICKET #%04d METADATA", ticket.id),
+			color = "📋",
+			fields = {
+				{ name = "📌 Channel", value = string.format("`#%s`", ticket.channelName or "ticket") },
+				{ name = "👤 Creator", value = string.format("<@%s> (`%s`)", ticket.creatorId, ticket.creatorName) },
+				{ name = "🕒 Opened At", value = string.format("`%s UTC`", os.date("!%Y-%m-%d %H:%M:%S", ticket.createdAt)) },
+				{ name = "⚡ Priority", value = ticket.priority },
+				{ name = "🛡️ Staff Assigned", value = claimText },
+				{ name = "📝 Inquiry Topic", value = string.format("`%s`", ticket.reason) },
+			},
+			footer = "BloxSpeak Tickets • Ticket Details",
+		})
+
+		message:Reply(infoCard, nil)
 		return
 	end
 
-	-- Stats Command
+	-- !stats
 	if command == "stats" or command == "ticketstats" then
-		local statsContent = string.format(
-			"📊 **TICKET SYSTEM STATISTICS**\n" ..
-			"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" ..
-			"• **Total Tickets Created:** `%d`\n" ..
-			"• **Currently Open Tickets:** `%d`\n" ..
-			"• **Archived / Closed Tickets:** `%d`\n" ..
-			"━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-			db.ticketCounter,
-			getActiveCount(),
-			getClosedCount()
-		)
-		message:Reply(statsContent, nil)
+		local statsCard = formatEmbed({
+			title = "TICKET SYSTEM STATISTICS",
+			color = "📊",
+			fields = {
+				{ name = "🎫 Total Tickets Created", value = string.format("`#%04d`", db.ticketCounter) },
+				{ name = "🟢 Currently Active Tickets", value = string.format("`%d open`", getActiveCount()) },
+				{ name = "📦 Archived Tickets", value = string.format("`%d closed`", getClosedCount()) },
+				{ name = "⏱️ Bot Uptime", value = string.format("`%s`", formatUptime(os.time() - START_TIME)) },
+			},
+			footer = "BloxSpeak Tickets • Live Metrics",
+		})
+
+		message:Reply(statsCard, nil)
 		return
 	end
 end)
 
--- Bot Event: ReactionAdded (Interactive Panel & Ticket Controls)
+--------------------------------------------------------------------------------
+-- 7. Reaction Added Handler
+--------------------------------------------------------------------------------
 bot.ReactionAdded:Connect(function(reaction)
 	local emoji = reaction.Emoji
 	local user = reaction.User
@@ -625,15 +833,12 @@ bot.ReactionAdded:Connect(function(reaction)
 		return
 	end
 
-	log("INFO", string.format("ReactionAdded: emoji=%s user=%s room=%s msg=%s", tostring(emoji), user.Username or user.Id, room.Name or room.Id, tostring(messageId)))
-
 	local server = room.Server
 
 	-- 1. PANEL REACTION: Open a new ticket
 	local isPanel = db.panelMessageIds[messageId] == true
 	local isPanelEmoji = emoji == "🎫" or emoji == "📩" or emoji == "🎟️"
 
-	-- If the message is a panel OR emoji is 🎫/📩 in a channel with ticket in name
 	if isPanel or (isPanelEmoji and server and string.find(string.lower(room.Name or ""), "ticket")) then
 		if server then
 			log("INFO", string.format("Panel reaction by %s -> creating ticket", user.Username or user.Id))
@@ -655,12 +860,12 @@ bot.ReactionAdded:Connect(function(reaction)
 		-- Claim Ticket Reaction (🙋‍♂️ or ✋ or 📌)
 		if emoji == "🙋‍♂️" or emoji == "✋" or emoji == "📌" or emoji == "🙋" or emoji == "👋" then
 			if ticket.claimedBy then
-				room:Send(string.format("⚠️ This ticket is already claimed by **@%s**!", ticket.claimedByName or "Staff"), nil)
+				room:Send(warnEmbed("Already Claimed", string.format("This ticket is already claimed by **@%s**!", ticket.claimedByName or "Staff")), nil)
 			else
 				ticket.claimedBy = user.Id
 				ticket.claimedByName = user.Username or ("User_" .. string.sub(user.Id, 1, 4))
 				saveData()
-				room:Send(string.format("🙋‍♂️ **Ticket #%04d has been claimed by @%s!**", ticket.id, ticket.claimedByName), nil)
+				room:Send(successEmbed("Ticket Claimed", string.format("🙋‍♂️ <@%s> has claimed **Ticket #%04d**!", user.Id, ticket.id)), nil)
 			end
 			return
 		end
@@ -672,29 +877,20 @@ bot.ReactionAdded:Connect(function(reaction)
 			if #transcript > 1400 then
 				preview = preview .. "\n... [Transcript Truncated due to size limit]"
 			end
-			room:Send(string.format("📜 **Ticket Transcript:**\n```\n%s\n```", preview), nil)
+			room:Send(formatEmbed({
+				title = string.format("Ticket Transcript #%04d", ticket.id),
+				color = "📜",
+				description = string.format("```\n%s\n```", preview),
+				footer = "BloxSpeak Tickets • Transcript Export",
+			}), nil)
 			return
 		end
 	end
 end)
 
--- Web Dashboard Generator
-local function formatUptime(seconds: number): string
-	local d = math.floor(seconds / 86400)
-	local h = math.floor((seconds % 86400) / 3600)
-	local m = math.floor((seconds % 3600) / 60)
-	local s = seconds % 60
-	if d > 0 then
-		return string.format("%dd %dh %dm %ds", d, h, m, s)
-	elseif h > 0 then
-		return string.format("%dh %dm %ds", h, m, s)
-	elseif m > 0 then
-		return string.format("%dm %ds", m, s)
-	else
-		return string.format("%ds", s)
-	end
-end
-
+--------------------------------------------------------------------------------
+-- 8. Web Dashboard Generator & Render Server
+--------------------------------------------------------------------------------
 local function generateDashboardHtml(): string
 	local botName = (bot._me and bot._me.Username) or "Tickets Bot"
 	local botId = (bot._me and bot._me.Id) or "0QvB0iMjP"
@@ -708,7 +904,7 @@ local function generateDashboardHtml(): string
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>%s | BloxSpeak Tickets</title>
+    <title>%s | BloxSpeak Tickets Dashboard</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -821,7 +1017,7 @@ local function generateDashboardHtml(): string
     <div class="container">
         <div class="hero">
             <h1>BloxSpeak Tickets Dashboard</h1>
-            <p>High-performance customer support system for BloxSpeak with reaction panels, instant private DMs, transcripts, and channel lifecycle management.</p>
+            <p>Customer support automation with Discord-style rich embed cards, reaction panels, transcripts, and channel management.</p>
         </div>
 
         <div class="stats-grid">
@@ -868,7 +1064,7 @@ local function generateDashboardHtml(): string
                 <div class="section-title">🛠️ Chat Commands</div>
                 <div class="command-item">
                     <span class="cmd-badge">!panel</span>
-                    <span class="cmd-desc">Deploys ticket reaction panel</span>
+                    <span class="cmd-desc">Deploys rich ticket reaction panel</span>
                 </div>
                 <div class="command-item">
                     <span class="cmd-badge">!new [reason]</span>
@@ -942,7 +1138,7 @@ task.spawn(function()
 end)
 
 -- Start Bot
-log("INFO", "Starting BloxSpeak Tickets Bot with Dashboard & Web Server...")
+log("INFO", "Starting BloxSpeak Tickets Bot with Rich Embed Cards Engine...")
 bot:Connect()
 
 -- Keep process alive
